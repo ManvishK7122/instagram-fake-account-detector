@@ -1,0 +1,10 @@
+streamlit
+xgboost
+scikit-learn
+feature-engine
+shap
+joblib
+pandas
+numpy
+matplotlib
+kagglehub

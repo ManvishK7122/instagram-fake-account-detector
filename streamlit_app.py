@@ -1,13 +1,20 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import joblib
+import kagglehub
+import os
 import shap
 import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.impute import SimpleImputer
+from feature_engine.transformation import YeoJohnsonTransformer
+from xgboost import XGBClassifier
 
 st.set_page_config(
     page_title="Instagram Fake Account Detector",
-    page_icon="",
     layout="wide"
 )
 
@@ -19,35 +26,60 @@ with st.sidebar:
         "as fake or real using account metadata and behavioral features."
     )
     st.divider()
-
     st.markdown("**Model**")
     st.markdown("XGBoost with hyperparameter tuning via RandomizedSearchCV")
-
     st.markdown("**Dataset**")
     st.markdown("785 Instagram accounts — [Kaggle](https://www.kaggle.com/datasets/rezaunderfit/instagram-fake-and-real-accounts-dataset)")
-
     st.divider()
-
     st.markdown("**Model Performance on Test Set**")
     c1, c2 = st.columns(2)
     c1.metric("Accuracy",  "93.6%")
     c1.metric("Recall",    "97.8%")
     c2.metric("F1 Score",  "96.4%")
     c2.metric("ROC-AUC",   "95.2%")
-
     st.divider()
-
     st.markdown("**Built by Manvish Kollu**")
     st.markdown("[GitHub](https://github.com/ManvishK7122)   |   [LinkedIn](https://www.linkedin.com/in/manvish-kollu/)")
 
-# ── load model ──────────────────────────────────────────────────────────
+# ── train model on startup ───────────────────────────────────────────────
 @st.cache_resource
-def load_model():
-    return joblib.load("fake_account_model.pkl")
+def train_model():
+    path = kagglehub.dataset_download("rezaunderfit/instagram-fake-and-real-accounts-dataset")
+    df = pd.read_csv(os.path.join(path, "final-v1.csv"))
 
-model = load_model()
+    num_features = ['edge_followed_by', 'edge_follow', 'username_length', 'full_name_length']
+    cat_features = [col for col in df.columns if col not in num_features + ['is_fake']]
 
-# ── header ──────────────────────────────────────────────────────────────
+    X = df.drop(columns=['is_fake'])
+    y = df['is_fake']
+    X_train, _, y_train, _ = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+
+    num_pipeline = Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("transformer", YeoJohnsonTransformer()),
+        ("scaler", MinMaxScaler())
+    ])
+    cat_pipeline = Pipeline([("imputer", SimpleImputer(strategy="most_frequent"))])
+    preprocessor = ColumnTransformer([
+        ("num", num_pipeline, num_features),
+        ("cat", cat_pipeline, cat_features)
+    ])
+
+    model = Pipeline([
+        ("preprocessor", preprocessor),
+        ("model", XGBClassifier(
+            n_estimators=300, max_depth=4,
+            learning_rate=0.05, subsample=0.7,
+            random_state=42, eval_metric='logloss'
+        ))
+    ])
+    model.fit(X_train, y_train)
+    return model, num_features, cat_features
+
+with st.spinner("Loading model..."):
+    model, num_features, cat_features = train_model()
+
+# ── header ───────────────────────────────────────────────────────────────
 st.title("Instagram Fake Account Detector")
 st.markdown(
     "Enter an Instagram account's profile features below. "
@@ -56,16 +88,16 @@ st.markdown(
 )
 st.divider()
 
-# ── inputs ───────────────────────────────────────────────────────────────
+# ── inputs ────────────────────────────────────────────────────────────────
 st.subheader("Account Features")
 col1, col2 = st.columns(2)
 
 with col1:
     st.markdown("**Engagement Metrics**")
-    edge_followed_by = st.number_input("Followers",     min_value=0, max_value=1000000, value=500,  step=10)
-    edge_follow      = st.number_input("Following",     min_value=0, max_value=10000,   value=300,  step=10)
-    username_length  = st.slider("Username length",     1, 30, 10)
-    full_name_length = st.slider("Full name length",    0, 50, 12)
+    edge_followed_by = st.number_input("Followers",  min_value=0, max_value=1000000, value=500,  step=10)
+    edge_follow      = st.number_input("Following",  min_value=0, max_value=10000,   value=300,  step=10)
+    username_length  = st.slider("Username length",  1, 30, 10)
+    full_name_length = st.slider("Full name length", 0, 50, 12)
 
 with col2:
     st.markdown("**Profile Characteristics**")
@@ -80,7 +112,7 @@ with col2:
 
 st.divider()
 
-# ── prediction ──────────────────────────────────────────────────────────
+# ── prediction ────────────────────────────────────────────────────────────
 if st.button("Analyse Account", type="primary", use_container_width=True):
 
     input_df = pd.DataFrame([{
@@ -103,37 +135,27 @@ if st.button("Analyse Account", type="primary", use_container_width=True):
     fake_prob   = probability[1]
     confidence  = probability[prediction]
 
-    # result banner
     if prediction == 1:
         st.error(f"This account is likely FAKE — {confidence:.1%} confidence")
     else:
         st.success(f"This account is likely REAL — {confidence:.1%} confidence")
 
-    # metric cards
     m1, m2, m3 = st.columns(3)
     m1.metric("Prediction",       "Fake" if prediction == 1 else "Real")
     m2.metric("Confidence",       f"{confidence:.1%}")
     m3.metric("Fake Probability", f"{fake_prob:.1%}")
 
-    # confidence bar
     st.markdown("**Fake probability**")
     st.progress(float(fake_prob))
-
     st.divider()
 
-    # ── SHAP waterfall ───────────────────────────────────────────────────
     st.subheader("Why did the model decide this?")
     st.markdown(
         "The chart below shows how each feature pushed the prediction toward "
         "fake (red) or real (blue) for this specific account."
     )
 
-    num_features  = ["edge_followed_by", "edge_follow", "username_length", "full_name_length"]
-    cat_features  = ["username_has_number", "full_name_has_number", "is_private",
-                     "is_joined_recently", "has_channel", "is_business_account",
-                     "has_guides", "has_external_url"]
-    feature_names = num_features + cat_features
-
+    feature_names     = num_features + cat_features
     xgb_clf           = model.named_steps["model"]
     preprocessor      = model.named_steps["preprocessor"]
     input_transformed = preprocessor.transform(input_df)

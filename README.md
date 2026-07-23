@@ -2,7 +2,7 @@
 
 A machine learning project that classifies Instagram accounts as fake or real using account metadata and behavioral features.
 
-**Live demo:** [link coming after deployment]
+**Live demo:** (https://instagram-fake-account-detector-hkaspvghf8q4whpldimhew.streamlit.app/)
 
 ## Overview
 
